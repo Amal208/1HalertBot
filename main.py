@@ -1,194 +1,109 @@
 import requests
 import time
-import pandas as pd
-from datetime import datetime
 import logging
 import sys
+from datetime import datetime
 
 # Setup logging with Unicode support
 def setup_logging():
-    # Create logger
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
-    
-    # Remove existing handlers
     for handler in logger.handlers[:]:
         logger.removeHandler(handler)
-    
-    # Create formatter
     formatter = logging.Formatter('%(asctime)s - %(message)s')
-    
-    # File handler with UTF-8 encoding
     file_handler = logging.FileHandler("trading_alerts.log", encoding='utf-8')
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
-    
-    # Stream handler with UTF-8 encoding for console
     stream_handler = logging.StreamHandler(sys.stdout)
     stream_handler.setFormatter(formatter)
     logger.addHandler(stream_handler)
-    
     return logger
 
-# Setup logging
 logger = setup_logging()
 
 class BinanceFuturesAlert:
     def __init__(self, telegram_bot_token=None, telegram_chat_id=None):
-        # FIXED: Removed trailing spaces and corrected URL
-        self.base_url = "https://fapi.binance.com"
-        self.symbols = []
-        self.symbols_24h_gain = {}      # Store 24h gain for each symbol
-        self.previous_highs = {}        # Store previous 1H candle high
-        self.previous_lows = {}         # Store previous 1H candle low
-        # self.alerted_symbols = set()  # ❌ REMOVED — allow repeated alerts
-        self.symbol_entry_times = {}    # Track when symbol FIRST entered Top 50
-        self.persistent_symbols = set() # Cache symbols known to be persistent
+        self.base_url = "https://fapi.binance.com"  # ✅ Fixed: no trailing spaces
         self.telegram_bot_token = telegram_bot_token
         self.telegram_chat_id = telegram_chat_id
+        self.previous_highs = {}
+        self.previous_lows = {}
 
-        # ✅ ADDED: Mid/Low Cap Coins to monitor alongside top gainers
-        self.mid_low_cap_symbols = [
-            "SANDUSDT", "MANAUSDT", "GALAUSDT", "CHZUSDT", "1INCHUSDT",
-            "LPTUSDT", "DARUSDT", "OGUSDT", "TLMUSDT", "CVCUSDT",
-            "RLCUSDT", "BAKEUSDT", "DGBUSDT", "TRBUSDT", "STMXUSDT",
-            "ANKRUSDT", "CTKUSDT", "SKLUSDT", "ALPHAUSDT", "PERPUSDT"
-        ]
-        
-    def get_top_gaining_symbols(self, limit=30):
-        """Get top gaining futures symbols by 24h price change percentage"""
+    def get_top_gainers(self, limit=20):
+        """Fetch top 20 gainers by 24h price change % (USDT pairs only)"""
         try:
-            url = f"{self.base_url}/fapi/v1/ticker/24hr"
-            response = requests.get(url)
+            response = requests.get(f"{self.base_url}/fapi/v1/ticker/24hr")
             response.raise_for_status()
             data = response.json()
-            
-            # Filter for USDT pairs and sort by price change percent
             usdt_pairs = [d for d in data if d['symbol'].endswith('USDT')]
             sorted_pairs = sorted(usdt_pairs, key=lambda x: float(x['priceChangePercent']), reverse=True)
-            
-            # Get top gaining symbols and their 24h gain
-            top_symbols = []
-            for pair in sorted_pairs[:limit]:
-                symbol = pair['symbol']
-                gain = float(pair['priceChangePercent'])
-                top_symbols.append(symbol)
-                self.symbols_24h_gain[symbol] = gain
-
-                # Track first entry time
-                if symbol not in self.symbol_entry_times:
-                    self.symbol_entry_times[symbol] = datetime.now()
-                    logger.info(f"🆕 New Top Gainer: {symbol} entered list at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-
+            top_symbols = [pair['symbol'] for pair in sorted_pairs[:limit]]
+            logger.info(f"Fetched top {len(top_symbols)} gainers: {', '.join(top_symbols)}")
             return top_symbols
-            
         except Exception as e:
-            logger.error(f"Error fetching top gaining symbols: {e}")
+            logger.error(f"Error fetching top gainers: {e}")
             return []
-    
+
     def get_klines(self, symbol, interval='1h', limit=2):
-        """Get candle data for a symbol"""
         try:
-            url = f"{self.base_url}/fapi/v1/klines"
-            params = {
-                'symbol': symbol,
-                'interval': interval,
-                'limit': limit
-            }
-            response = requests.get(url, params=params)
+            params = {'symbol': symbol, 'interval': interval, 'limit': limit}
+            response = requests.get(f"{self.base_url}/fapi/v1/klines", params=params)
             response.raise_for_status()
             return response.json()
         except Exception as e:
             logger.error(f"Error fetching klines for {symbol}: {e}")
             return None
-    
+
     def get_current_price(self, symbol):
-        """Get current price for a symbol"""
         try:
-            url = f"{self.base_url}/fapi/v1/ticker/price"
             params = {'symbol': symbol}
-            response = requests.get(url, params=params)
+            response = requests.get(f"{self.base_url}/fapi/v1/ticker/price", params=params)
             response.raise_for_status()
-            data = response.json()
-            return float(data['price'])
+            return float(response.json()['price'])
         except Exception as e:
             logger.error(f"Error fetching current price for {symbol}: {e}")
             return None
-    
+
     def get_24h_gain(self, symbol):
-        """Get 24h gain percentage for a symbol"""
         try:
-            # If we already have the gain from the top symbols list, use it
-            if symbol in self.symbols_24h_gain:
-                return self.symbols_24h_gain[symbol]
-            
-            # Otherwise, fetch it individually
-            url = f"{self.base_url}/fapi/v1/ticker/24hr"
             params = {'symbol': symbol}
-            response = requests.get(url, params=params)
+            response = requests.get(f"{self.base_url}/fapi/v1/ticker/24hr", params=params)
             response.raise_for_status()
-            data = response.json()
-            return float(data['priceChangePercent'])
+            return float(response.json()['priceChangePercent'])
         except Exception as e:
             logger.error(f"Error fetching 24h gain for {symbol}: {e}")
             return None
-    
+
     def check_cross_above_high(self, symbol):
-        """Check if current price has crossed above previous candle's high"""
-        klines = self.get_klines(symbol, interval='1h')
+        klines = self.get_klines(symbol)
         if not klines or len(klines) < 2:
             return False
-        
-        prev_high = float(klines[0][2])  # High price is at index 2
+        prev_high = float(klines[0][2])  # index 2 = high
         current_price = self.get_current_price(symbol)
         if current_price is None:
             return False
-        
-        if symbol not in self.previous_highs:
-            self.previous_highs[symbol] = prev_high
-        
-        crossed = current_price > self.previous_highs[symbol] and self.previous_highs[symbol] > 0
+        crossed = current_price > prev_high
         self.previous_highs[symbol] = prev_high
-        
         return crossed
 
     def check_cross_below_low(self, symbol):
-        """Check if current price has crossed below previous candle's low"""
-        klines = self.get_klines(symbol, interval='1h')
+        klines = self.get_klines(symbol)
         if not klines or len(klines) < 2:
             return False
-        
-        prev_low = float(klines[0][3])  # Low price is at index 3
+        prev_low = float(klines[0][3])  # index 3 = low
         current_price = self.get_current_price(symbol)
         if current_price is None:
             return False
-        
-        if symbol not in self.previous_lows:
-            self.previous_lows[symbol] = prev_low
-        
-        crossed = current_price < self.previous_lows[symbol] and self.previous_lows[symbol] > 0
+        crossed = current_price < prev_low
         self.previous_lows[symbol] = prev_low
-        
         return crossed
 
-    def is_persistent_symbol(self, symbol):
-        """Check if symbol has been in Top 50 for more than 2 days"""
-        if symbol not in self.symbol_entry_times:
-            return False
-        
-        entry_time = self.symbol_entry_times[symbol]
-        duration = datetime.now() - entry_time
-        return duration.total_seconds() > (2 * 24 * 60 * 60)  # 2 days in seconds
-    
     def send_telegram_alert(self, message):
-        """Send alert to Telegram"""
         if not self.telegram_bot_token or not self.telegram_chat_id:
-            logger.warning("Telegram bot token or chat ID not configured")
+            logger.warning("Telegram not configured")
             return False
-        
         try:
-            # ✅ FIXED: Removed space after /bot — critical fix!
-            # ⚠️ NOTE: api.telegram.org is BLOCKED in Nepal per NTA directive.
+            # ✅ Critical fix: NO space after /bot
             url = f"https://api.telegram.org/bot{self.telegram_bot_token}/sendMessage"
             payload = {
                 'chat_id': self.telegram_chat_id,
@@ -199,117 +114,81 @@ class BinanceFuturesAlert:
             response.raise_for_status()
             return True
         except Exception as e:
-            logger.error(f"Error sending Telegram alert: {e}")
+            logger.error(f"Telegram alert failed: {e}")
             return False
-    
+
     def send_alert(self, symbol, current_price, reference_price, breakout_type='high'):
-        """Send alert to both log and Telegram"""
         gain_24h = self.get_24h_gain(symbol)
         gain_emoji = "📈" if gain_24h and gain_24h > 0 else "📉" if gain_24h and gain_24h < 0 else "➡️"
-        
-        # Check if symbol is persistent (>2 days in Top 50)
-        is_persistent = self.is_persistent_symbol(symbol)
-        persistence_tag = "🌟 PERSISTENT " if is_persistent else ""
-        persistence_emoji = "🌟" if is_persistent else ""
 
-        # Determine alert type and emoji
         if breakout_type == 'high':
             direction = "above 1H candle high"
             emoji = "🚀"
             ref_label = "Previous High"
-        elif breakout_type == 'low':
+        else:
             direction = "below 1H candle low"
             emoji = "🔻"
             ref_label = "Previous Low"
-        else:
-            direction = "unknown breakout"
-            emoji = "⚠️"
-            ref_label = "Reference Price"
 
-        # Log message (without emojis for Windows compatibility)
-        log_message = f"ALERT: {persistence_tag}{symbol} crossed {direction}!\n" \
-                      f"Current: ${current_price:.6f}\n" \
-                      f"{ref_label}: ${reference_price:.6f}\n" \
-                      f"24h Gain: {gain_24h:.2f}%\n" \
-                      f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        
-        logger.info(log_message)
-        
-        # Telegram message (with emojis)
-        telegram_message = f"<b>{persistence_emoji}{emoji} Binance Futures Alert</b>\n\n" \
-                           f"<b>Symbol:</b> {symbol} {'🌟' if is_persistent else ''}\n" \
-                           f"<b>Action:</b> Crossed {direction}\n" \
-                           f"<b>Current Price:</b> ${current_price:.6f}\n" \
-                           f"<b>{ref_label}:</b> ${reference_price:.6f}\n" \
-                           f"<b>24h Gain:</b> {gain_emoji} {gain_24h:.2f}%\n" \
-                           f"<b>Time:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        
-        self.send_telegram_alert(telegram_message)
-    
-    def monitor(self, check_interval=60):  # ⚠️ Reduced to 60s for accurate hourly sync
-        """Main monitoring loop — checks breakouts ONLY at 1H candle close"""
-        logger.info("Starting Binance Futures Monitoring Alert System (1H Candle Close Only)")
+        log_msg = (
+            f"ALERT: {symbol} crossed {direction}!\n"
+            f"Current: ${current_price:.6f}\n"
+            f"{ref_label}: ${reference_price:.6f}\n"
+            f"24h Gain: {gain_24h:.2f}%\n"
+            f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        logger.info(log_msg)
+
+        telegram_msg = (
+            f"<b>{emoji} Binance Futures Alert</b>\n\n"
+            f"<b>Symbol:</b> {symbol}\n"
+            f"<b>Action:</b> Crossed {direction}\n"
+            f"<b>Current Price:</b> ${current_price:.6f}\n"
+            f"<b>{ref_label}:</b> ${reference_price:.6f}\n"
+            f"<b>24h Gain:</b> {gain_emoji} {gain_24h:.2f}%\n"
+            f"<b>Time:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        self.send_telegram_alert(telegram_msg)
+
+    def monitor(self, check_interval=60):
+        logger.info("Starting simplified Binance Futures breakout monitor (Top 20 gainers only)")
         last_checked_hour = None
 
         while True:
             try:
                 now = datetime.now()
-                current_hour = now.hour
                 current_minute = now.minute
+                current_hour = now.hour
 
-                # ✅ Refresh top symbols + mid/low cap every hour (at minute 0)
-                if not self.symbols or current_minute == 0:
-                    top_gainers = self.get_top_gaining_symbols(limit=30)
-                    # ✅ Merge with mid/low cap coins
-                    self.symbols = list(set(top_gainers + self.mid_low_cap_symbols))
-                    logger.info(f"Updated monitoring list: {len(self.symbols)} symbols")
-
-                    # Optional: Log newly persistent symbols
-                    for symbol in self.symbols:
-                        if symbol in self.symbol_entry_times and symbol not in self.persistent_symbols:
-                            entry_time = self.symbol_entry_times[symbol]
-                            if (now - entry_time).total_seconds() > (2 * 24 * 60 * 60):
-                                logger.info(f"🌟 Persistent Momentum: {symbol} has been in Top 50 for over 2 days (since {entry_time.strftime('%Y-%m-%d %H:%M:%S')})")
-                                self.persistent_symbols.add(symbol)
-
-                # ✅ ONLY check breakouts at the CLOSE of 1H candle (minute 0)
-                if current_minute == 0 and last_checked_hour != current_hour:
+                # Refresh top gainers every hour at minute 0
+                if current_minute == 0:
+                    symbols = self.get_top_gainers(limit=20)
                     logger.info("⏰ Checking breakouts at 1H candle close...")
+
+                    for symbol in symbols:
+                        current_price = self.get_current_price(symbol)
+                        if current_price is None:
+                            continue
+
+                        if self.check_cross_above_high(symbol):
+                            self.send_alert(symbol, current_price, self.previous_highs[symbol], 'high')
+                        elif self.check_cross_below_low(symbol):
+                            self.send_alert(symbol, current_price, self.previous_lows[symbol], 'low')
+
                     last_checked_hour = current_hour
-
-                    for symbol in self.symbols:
-                        try:
-                            current_price = self.get_current_price(symbol)
-                            if current_price is None:
-                                continue
-
-                            # ✅ Check breakout above HIGH — NO alerted_symbols check → allow repeats
-                            if self.check_cross_above_high(symbol):
-                                self.send_alert(symbol, current_price, self.previous_highs[symbol], breakout_type='high')
-
-                            # ✅ Check breakout below LOW — NO alerted_symbols check → allow repeats
-                            elif self.check_cross_below_low(symbol):
-                                self.send_alert(symbol, current_price, self.previous_lows[symbol], breakout_type='low')
-
-                        except Exception as e:
-                            logger.error(f"Error checking {symbol}: {e}")
 
                 time.sleep(check_interval)
 
             except Exception as e:
-                logger.error(f"Error in main loop: {e}")
+                logger.error(f"Main loop error: {e}")
                 time.sleep(60)
 
 if __name__ == "__main__":
-    # Configure your Telegram bot token and chat ID
     TELEGRAM_BOT_TOKEN = "8255102897:AAEjtQGUk4c9eUuruW0nYoQBJOGI-uevLik"
     TELEGRAM_CHAT_ID = "-1002915874071"
-    
-    # Initialize the alert system
+
     alert_system = BinanceFuturesAlert(
         telegram_bot_token=TELEGRAM_BOT_TOKEN,
         telegram_chat_id=TELEGRAM_CHAT_ID
     )
-    
-    # Start monitoring — checks every 60s, triggers breakouts only on hour close
     alert_system.monitor(check_interval=60)
