@@ -258,7 +258,9 @@ if __name__ == "__main__":
     alert_system = BinanceFuturesAlert(
         telegram_bot_token=TELEGRAM_BOT_TOKEN,
         telegram_chat_id=TELEGRAM_CHAT_ID
-        alert_system.send_telegram_alert("<b>✅ Bot started</b>")
+       
     )
+     alert_system.send_telegram_alert("<b>✅ Bot started</b>")
     alert_system.monitor(check_interval=60)
+
 
