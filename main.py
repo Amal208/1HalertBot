@@ -6,10 +6,13 @@ import os
 from datetime import datetime
 from flask import Flask
 import threading
+import waitress
+
+logger = logging.getLogger()
 
 # Setup logging with Unicode support
 def setup_logging():
-    logger = logging.getLogger()
+    global logger
     logger.setLevel(logging.INFO)
     for handler in logger.handlers[:]:
         logger.removeHandler(handler)
@@ -22,7 +25,7 @@ def setup_logging():
     logger.addHandler(stream_handler)
     return logger
 
-logger = setup_logging()
+setup_logging()
 
 class BinanceFuturesAlert:
     def __init__(self, telegram_bot_token=None, telegram_chat_id=None):
@@ -266,14 +269,14 @@ def health():
 
 def run_web_server():
     port = int(os.environ.get('PORT', 8000))
-    app.run(host='0.0.0.0', port=port)
+    # Use waitress instead of Flask's dev server
+    waitress.serve(app, host='0.0.0.0', port=port, threads=4)
 
 if __name__ == "__main__":
     # Start web server in a separate thread to prevent Railway from sleeping
     web_thread = threading.Thread(target=run_web_server, daemon=True)
     web_thread.start()
     
-    # 🔐 Replace with your own (but note: Telegram is BLOCKED in Nepal)
     TELEGRAM_BOT_TOKEN = "8255102897:AAEjtQGUk4c9eUuruW0nYoQBJOGI-uevLik"
     TELEGRAM_CHAT_ID = "-1002915874071"
 
