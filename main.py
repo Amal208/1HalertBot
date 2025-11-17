@@ -2,7 +2,10 @@ import requests
 import time
 import logging
 import sys
+import os
 from datetime import datetime
+from flask import Flask
+import threading
 
 # Setup logging with Unicode support
 def setup_logging():
@@ -250,7 +253,26 @@ class BinanceFuturesAlert:
                 logger.error(f"Main loop error: {e}")
                 time.sleep(60)
 
+# Flask app to prevent Railway from sleeping
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Binance Futures Alert Bot is running!", 200
+
+@app.route('/health')
+def health():
+    return "OK", 200
+
+def run_web_server():
+    port = int(os.environ.get('PORT', 8000))
+    app.run(host='0.0.0.0', port=port)
+
 if __name__ == "__main__":
+    # Start web server in a separate thread to prevent Railway from sleeping
+    web_thread = threading.Thread(target=run_web_server, daemon=True)
+    web_thread.start()
+    
     # 🔐 Replace with your own (but note: Telegram is BLOCKED in Nepal)
     TELEGRAM_BOT_TOKEN = "8255102897:AAEjtQGUk4c9eUuruW0nYoQBJOGI-uevLik"
     TELEGRAM_CHAT_ID = "-1002915874071"
@@ -258,10 +280,6 @@ if __name__ == "__main__":
     alert_system = BinanceFuturesAlert(
         telegram_bot_token=TELEGRAM_BOT_TOKEN,
         telegram_chat_id=TELEGRAM_CHAT_ID
-       
     )
     alert_system.send_telegram_alert("<b>✅ Bot started</b>")
     alert_system.monitor(check_interval=60)
-
-
-
